@@ -2,8 +2,12 @@ package com.substation.ops.repository;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
+
+import jakarta.persistence.LockModeType;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.jpa.repository.query.Procedure;
 import org.springframework.data.repository.query.Param;
@@ -17,6 +21,14 @@ public interface WorkTicketRepository extends JpaRepository<WorkTicket, Long> {
     List<WorkTicket> findByIssueDateOrderByIdAsc(LocalDate issueDate);
 
     List<WorkTicket> findByBayIdAndStatus(Long bayId, String status);
+
+    /**
+     * 行级悲观锁：签字、撤回、安措确认等所有会推进票面的动作都先取锁，
+     * 两名值班员并发操作时串行化，后提交者拿到的一定是最新状态。
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select w from WorkTicket w where w.id = :id")
+    Optional<WorkTicket> findByIdForUpdate(@Param("id") Long id);
 
     /**
      * 【存储过程】调用 sp_next_work_ticket_no 生成票号（单向出站参数返回票号字符串）。

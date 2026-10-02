@@ -24,6 +24,8 @@ public class OperationStep {
 
     public static final String STATUS_PENDING = "PENDING";
     public static final String STATUS_DONE = "DONE";
+    /** 操作失败：保持在当前步位置，后续步骤不得跳越，需重新执行成功后才能推进 */
+    public static final String STATUS_FAILED = "FAILED";
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -46,6 +48,16 @@ public class OperationStep {
 
     @Column(name = "execute_time")
     private LocalDateTime executeTime;
+
+    /** 失败登记人 / 时间 / 原因（失败后可在原步重试，痕迹保留在票面提示中） */
+    @Column(name = "fail_person", length = 32)
+    private String failPerson;
+
+    @Column(name = "fail_time")
+    private LocalDateTime failTime;
+
+    @Column(name = "fail_reason", length = 255)
+    private String failReason;
 
     @Column(name = "status", length = 24)
     private String status;

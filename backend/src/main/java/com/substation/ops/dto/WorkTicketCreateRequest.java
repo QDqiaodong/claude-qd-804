@@ -2,7 +2,9 @@ package com.substation.ops.dto;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import lombok.Getter;
@@ -11,6 +13,7 @@ import lombok.Setter;
 
 /**
  * 新建工作票请求体：票号由存储过程自动生成并回写，不需要前端给。
+ * 安全措施既保留旧文本（safetyMeasures），也接受逐项措施清单（measures）。
  */
 @Getter
 @Setter
@@ -34,6 +37,10 @@ public class WorkTicketCreateRequest {
     private String powerCutRange;
 
     private String safetyMeasures;
+
+    /** 逐项安全措施（可空：兼容旧的纯文本开票） */
+    @Valid
+    private List<MeasureItemRequest> measures;
 
     private LocalDateTime planStartTime;
 

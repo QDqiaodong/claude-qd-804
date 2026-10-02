@@ -6,6 +6,8 @@
         <div class="ops-title">
           {{ date }} 操作票
           <span class="ops-sub">{{ list.length }} 张</span>
+          <el-button size="small" text type="primary" style="float: right"
+                     @click="current ? loadDetail(current.id) : reload()">刷新</el-button>
         </div>
         <div class="tk-list">
           <div
@@ -28,6 +30,7 @@
               color="#e65100"
               style="margin-top: 6px"
             />
+            <div v-if="t.failedSteps" class="tk-fail">有 {{ t.failedSteps }} 步操作失败，待重试</div>
           </div>
           <div v-if="!list.length" class="ops-empty">当天暂无操作票</div>
         </div>
@@ -44,14 +47,27 @@
 
         <div v-if="!current" class="ops-empty">选择左侧操作票开始执行</div>
         <div v-else class="step-list">
+          <el-alert
+            v-if="current.hasFailure"
+            type="error"
+            :closable="false"
+            show-icon
+            style="margin-bottom: 8px"
+            title="存在操作失败的步骤：已停在该步，后续步骤不可越过，请查明原因后在原步重新执行"
+          />
           <div
             v-for="s in current.steps"
             :key="s.stepNo"
             class="step-row"
-            :class="{ done: s.done, next: s.executable, blocked: !s.done && !s.executable }"
+            :class="{ done: s.done, next: s.executable, blocked: !s.done && !s.executable, failed: s.failed }"
           >
             <div class="step-no">{{ s.stepNo }}</div>
-            <div class="step-desc">{{ s.actionDesc }}</div>
+            <div class="step-desc">
+              {{ s.actionDesc }}
+              <div v-if="s.failed" class="step-fail">
+                操作失败：{{ s.failReason }}（{{ s.failPerson }} · {{ fmt(s.failTime) }}），请在本步重试
+              </div>
+            </div>
             <div class="step-meta">
               <template v-if="s.done">
                 <span class="who">{{ s.executePerson }}</span>
@@ -66,9 +82,16 @@
               :disabled="!s.executable"
               @click="execute(s.stepNo)"
             >
-              {{ s.executable ? '勾选执行' : '不可勾选' }}
+              {{ s.failed ? '重新执行' : (s.executable ? '勾选执行' : '不可勾选') }}
             </el-button>
-            <el-tag v-else size="small" type="success">已执行</el-tag>
+            <el-button
+              v-if="s.executable"
+              size="small"
+              type="danger"
+              plain
+              @click="askFail(s.stepNo)"
+            >登记失败</el-button>
+            <el-tag v-else-if="s.done" size="small" type="success">已执行</el-tag>
           </div>
         </div>
       </div>
@@ -117,13 +140,23 @@
         <el-button type="primary" @click="confirmExecute">确认执行</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="failVisible" :title="`登记第 ${targetStep} 步操作失败`" width="380">
+      <div class="ops-sub" style="margin-bottom: 8px">{{ targetDesc }}</div>
+      <el-input v-model="failPersonInput" placeholder="登记人姓名" style="margin-bottom: 10px" />
+      <el-input v-model="failReason" type="textarea" :rows="2" placeholder="失败原因（如闭锁未解除、位置指示不到位）" />
+      <template #footer>
+        <el-button @click="failVisible = false">取消</el-button>
+        <el-button type="danger" @click="confirmFail">确认登记失败</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { executeStep, operationTicket, operationTickets } from '../api'
+import { executeStep, failStep, operationTicket, operationTickets } from '../api'
 
 const props = defineProps({
   date: { type: String, required: true },
@@ -136,6 +169,9 @@ const visible = ref(false)
 const person = ref('')
 const targetStep = ref(1)
 const targetDesc = ref('')
+const failVisible = ref(false)
+const failPersonInput = ref('')
+const failReason = ref('')
 
 const doneSteps = computed(() => (current.value ? current.value.steps.filter((s) => s.done) : []))
 
@@ -181,11 +217,43 @@ async function confirmExecute() {
     visible.value = false
     await reload(current.value.id)
   } catch (e) {
+    ElMessage({ message: e.message, type: 'error', duration: 3600, showClose: true })
+  }
+}
+
+function askFail(stepNo) {
+  const s = current.value.steps.find((i) => i.stepNo === stepNo)
+  targetStep.value = stepNo
+  targetDesc.value = s ? s.actionDesc : ''
+  failPersonInput.value = current.value.operatorName || ''
+  failReason.value = ''
+  failVisible.value = true
+}
+
+async function confirmFail() {
+  if (!failPersonInput.value || !failReason.value) {
+    ElMessage.warning('登记人与失败原因必填')
+    return
+  }
+  try {
+    await failStep(current.value.id, targetStep.value, failPersonInput.value, failReason.value)
+    ElMessage.warning(`第 ${targetStep.value} 步已登记失败，停在该步待重试`)
+    failVisible.value = false
+    await reload(current.value.id)
+  } catch (e) {
     ElMessage.error(e.message)
   }
 }
 
 watch(() => props.date, () => reload(), { immediate: true })
+
+// 多终端协作：每 8 秒静默刷新，另一值班员的步骤执行/失败登记会及时反映为真实阶段
+let pollTimer = setInterval(() => {
+  if (!visible.value && !failVisible.value && current.value) {
+    loadDetail(current.value.id).catch(() => {})
+  }
+}, 8000)
+onBeforeUnmount(() => clearInterval(pollTimer))
 </script>
 
 <style scoped>
@@ -262,6 +330,26 @@ watch(() => props.date, () => reload(), { immediate: true })
 
 .step-row.blocked {
   opacity: 0.62;
+}
+
+.step-row.failed {
+  border-left-color: #c62828;
+  background: #fdecea;
+  box-shadow: 0 0 0 2px rgba(198, 40, 40, 0.12);
+}
+
+.step-fail {
+  font-size: 11px;
+  color: #c62828;
+  margin-top: 3px;
+  font-weight: 700;
+}
+
+.tk-fail {
+  font-size: 11px;
+  color: #c62828;
+  font-weight: 700;
+  margin-top: 4px;
 }
 
 .step-no {

@@ -47,6 +47,10 @@ public class WorkTicket {
     public static final String STAGE_PERMIT = "PERMIT";
     public static final String STAGE_TERMINATE = "TERMINATE";
 
+    /** 许可后子阶段：作业中 → 安措拆除恢复中（撤回许可则回到已签发） */
+    public static final String PHASE_WORKING = "WORKING";
+    public static final String PHASE_DEMOLISHING = "DEMOLISHING";
+
     /** 票种：第一种（停电）/ 第二种（不停电） */
     public static final String KIND_POWER_CUT = "POWER_CUT";
 
@@ -112,6 +116,10 @@ public class WorkTicket {
 
     @Column(name = "terminate_time")
     private LocalDateTime terminateTime;
+
+    /** 许可后子阶段：WORKING 作业中 / DEMOLISHING 安措拆除恢复中；撤回许可后置空 */
+    @Column(name = "permit_phase", length = 24)
+    private String permitPhase;
 
     @Column(name = "status", length = 24)
     private String status;

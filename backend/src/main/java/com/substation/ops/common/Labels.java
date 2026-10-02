@@ -17,6 +17,12 @@ public final class Labels {
     private static final Map<String, String> DEFECT_STATUS = new HashMap<>();
     private static final Map<String, String> WORK_STATUS = new HashMap<>();
     private static final Map<String, String> OP_STATUS = new HashMap<>();
+    private static final Map<String, String> STEP_STATUS = new HashMap<>();
+    private static final Map<String, String> MEASURE_TYPE = new HashMap<>();
+    private static final Map<String, String> MEASURE_STATUS = new HashMap<>();
+    private static final Map<String, String> MEASURE_ACTION = new HashMap<>();
+    private static final Map<String, String> PERMIT_PHASE = new HashMap<>();
+    private static final Map<String, String> TICKET_EVENT = new HashMap<>();
     private static final Map<String, String> EQUIP_TYPE = new HashMap<>();
     private static final Map<String, String> EQUIP_STATUS = new HashMap<>();
     private static final Map<String, String> INSPECT_RESULT = new HashMap<>();
@@ -51,6 +57,38 @@ public final class Labels {
         OP_STATUS.put("RUNNING", "执行中");
         OP_STATUS.put("FINISHED", "已完成");
         OP_STATUS.put("CANCELED", "已作废");
+
+        STEP_STATUS.put("PENDING", "待执行");
+        STEP_STATUS.put("DONE", "已执行");
+        STEP_STATUS.put("FAILED", "操作失败");
+
+        MEASURE_TYPE.put("GROUND_LINE", "接地线");
+        MEASURE_TYPE.put("EARTH_SWITCH", "接地刀闸");
+        MEASURE_TYPE.put("BARRIER", "遮栏");
+        MEASURE_TYPE.put("SIGNBOARD", "标示牌");
+        MEASURE_TYPE.put("OTHER", "其他措施");
+
+        MEASURE_STATUS.put("PENDING", "待执行");
+        MEASURE_STATUS.put("INSTALLED", "已执行");
+        MEASURE_STATUS.put("TO_REMOVE", "待拆除");
+        MEASURE_STATUS.put("REMOVED", "已拆除");
+        MEASURE_STATUS.put("VOIDED", "已变更作废");
+
+        MEASURE_ACTION.put("CREATE", "编制入票");
+        MEASURE_ACTION.put("INSTALL", "装设/合上确认");
+        MEASURE_ACTION.put("REMOVE", "拆除/取下确认");
+        MEASURE_ACTION.put("VOID", "现场变更");
+        MEASURE_ACTION.put("REACTIVATE", "撤回许可回置待执行");
+
+        PERMIT_PHASE.put("WORKING", "作业中");
+        PERMIT_PHASE.put("DEMOLISHING", "安措拆除恢复中");
+
+        TICKET_EVENT.put("ISSUE", "签发");
+        TICKET_EVENT.put("PERMIT", "许可开工");
+        TICKET_EVENT.put("WITHDRAW", "撤回许可");
+        TICKET_EVENT.put("START_REMOVE", "通知拆除安措");
+        TICKET_EVENT.put("TERMINATE", "终结");
+        TICKET_EVENT.put("CANCEL", "作废");
 
         EQUIP_TYPE.put("TRANSFORMER", "主变压器");
         EQUIP_TYPE.put("BREAKER", "断路器");
@@ -93,6 +131,30 @@ public final class Labels {
 
     public static String opStatus(String status) {
         return of(OP_STATUS, status);
+    }
+
+    public static String stepStatus(String status) {
+        return of(STEP_STATUS, status);
+    }
+
+    public static String measureType(String type) {
+        return of(MEASURE_TYPE, type);
+    }
+
+    public static String measureStatus(String status) {
+        return of(MEASURE_STATUS, status);
+    }
+
+    public static String measureAction(String action) {
+        return of(MEASURE_ACTION, action);
+    }
+
+    public static String permitPhase(String phase) {
+        return of(PERMIT_PHASE, phase);
+    }
+
+    public static String ticketEvent(String event) {
+        return of(TICKET_EVENT, event);
     }
 
     public static String equipType(String type) {
