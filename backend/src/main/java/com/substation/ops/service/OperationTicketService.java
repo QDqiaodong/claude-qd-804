@@ -110,12 +110,43 @@ public class OperationTicketService {
         return map;
     }
 
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> byBay(Long bayId) {
+        if (bayId == null) {
+            return List.of();
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (OperationTicket t : ticketRepository.findByBayIdOrderByIssueDateDescIdDesc(bayId)) {
+            Map<String, Object> map = new HashMap<>();
+            map.put("id", t.getId());
+            map.put("ticketNo", t.getTicketNo());
+            map.put("issueDate", t.getIssueDate());
+            map.put("taskName", t.getTaskName());
+            map.put("status", t.getStatus());
+            map.put("statusName", Labels.opStatus(t.getStatus()));
+            List<Map<String, Object>> steps = new ArrayList<>();
+            for (OperationStep s : stepRepository.findByTicketIdOrderByStepNoAsc(t.getId())) {
+                Map<String, Object> sm = new HashMap<>();
+                sm.put("stepNo", s.getStepNo());
+                sm.put("actionDesc", s.getActionDesc());
+                sm.put("status", s.getStatus());
+                sm.put("done", OperationStep.STATUS_DONE.equals(s.getStatus()));
+                steps.add(sm);
+            }
+            map.put("steps", steps);
+            result.add(map);
+        }
+        return result;
+    }
+
     /**
      * 执行某一步：必须按顺序执行，跳步直接报错。
+     * 行票行锁串行化并发提交：两名值班员同时勾选同一步时，只有一次有效推进，
+     * 后提交者看到「已执行」的最新结果，不产生重复执行记录。
      */
     @Transactional
     public Map<String, Object> executeStep(Long id, Integer stepNo, String person) {
-        OperationTicket ticket = ticketRepository.findById(id)
+        OperationTicket ticket = ticketRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new BizException("操作票不存在"));
 
         if (OperationTicket.STATUS_FINISHED.equals(ticket.getStatus())) {
@@ -136,7 +167,10 @@ public class OperationTicketService {
                 .orElseThrow(() -> new BizException("第 " + stepNo + " 步不存在"));
 
         if (OperationStep.STATUS_DONE.equals(target.getStatus())) {
-            throw new BizException("第 " + stepNo + " 步已执行，请勿重复勾选");
+            // 并发后到者 / 重复点击：最新结果即「已由某人于某时执行」，不再写第二条记录
+            throw new BizException("第 " + stepNo + " 步已由 " + target.getExecutePerson()
+                    + " 于 " + (target.getExecuteTime() == null ? "" : target.getExecuteTime().toString().replace('T', ' '))
+                    + " 执行，请勿重复勾选（页面已刷新为最新结果）");
         }
 
         OperationStep firstUndone = steps.stream()
@@ -153,7 +187,9 @@ public class OperationTicketService {
         target.setExecuteTime(LocalDateTime.now());
         stepRepository.save(target);
 
-        long doneCount = steps.stream().filter(s -> OperationStep.STATUS_DONE.equals(s.getStatus())).count() + 1;
+        // target 是 steps 中的受管实体，置为 DONE 后已包含在下面的计数内，不能再 +1，
+        // 否则 N 步票执行 N-1 步就会被误判为全部完成
+        long doneCount = steps.stream().filter(s -> OperationStep.STATUS_DONE.equals(s.getStatus())).count();
         if (doneCount >= steps.size()) {
             ticket.setStatus(OperationTicket.STATUS_FINISHED);
         } else {

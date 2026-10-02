@@ -43,6 +43,12 @@ public class OperationTicketController {
         return ApiResponse.success(operationTicketService.detail(id));
     }
 
+    /** 按间隔列出操作票及步骤（工作票编排安全措施、核对两票一致时用） */
+    @GetMapping("/by-bay")
+    public ApiResponse<List<Map<String, Object>>> byBay(@RequestParam Long bayId) {
+        return ApiResponse.success(operationTicketService.byBay(bayId));
+    }
+
     /** 按步骤序号执行，不得跳步 */
     @PostMapping("/{id}/steps/{stepNo}/execute")
     public ApiResponse<Map<String, Object>> executeStep(@PathVariable Long id,

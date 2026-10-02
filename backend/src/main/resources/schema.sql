@@ -12,6 +12,8 @@ USE `substation_ops`;
 
 SET NAMES utf8mb4;
 
+DROP TABLE IF EXISTS `work_ticket_log`;
+DROP TABLE IF EXISTS `safety_measure`;
 DROP TABLE IF EXISTS `operation_step`;
 DROP TABLE IF EXISTS `operation_ticket`;
 DROP TABLE IF EXISTS `work_ticket`;
@@ -182,6 +184,54 @@ CREATE TABLE `operation_step` (
     KEY `idx_step_ticket` (`ticket_id`)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT ='倒闸操作步骤';
 
+-- ---------------------------- 10. 安全措施（逐项可确认的执行闭环） ----------------------------
+-- 每项措施区分类型（接地线/接地刀闸/遮栏/标示牌），记录所在间隔、具体位置、要求动作，
+-- 并逐项登记装设（合上）与拆除（拉开）的执行人、执行时间。
+-- 阶段：PENDING 待执行 → EXECUTED 已执行（许可后呈现为 PENDING_REMOVE 待拆除）→ REMOVED 已拆除；
+--       CANCELED 为现场变更后旧项作废，只作历史痕迹保留，不再参与许可/终结核对。
+CREATE TABLE `safety_measure` (
+    `id`                  BIGINT       NOT NULL AUTO_INCREMENT,
+    `ticket_id`           BIGINT       NOT NULL COMMENT '所属工作票',
+    `seq_no`              INT          NOT NULL COMMENT '票面措施序号，从 1 开始',
+    `measure_type`        VARCHAR(16)  NOT NULL COMMENT '类型：GROUND_WIRE 接地线/EARTH_SWITCH 接地刀闸/BARRIER 遮栏/SIGNBOARD 标示牌',
+    `bay_id`              BIGINT       NOT NULL COMMENT '所在间隔',
+    `location`            VARCHAR(128) NOT NULL COMMENT '具体位置，如「2017 接地刀闸刀闸口」「主变 10kV 套管侧」',
+    `required_action`     VARCHAR(255) NOT NULL COMMENT '要求动作，如「装设接地线 1 组」「合上接地刀闸」「装设遮栏」「悬挂标示牌」',
+    `signboard_text`      VARCHAR(64)  DEFAULT NULL COMMENT '标示牌文字，如「禁止合闸，有人工作」「在此工作」',
+    `op_ticket_id`        BIGINT       DEFAULT NULL COMMENT '许可前关联的倒闸操作票（装设/合上对应步骤）',
+    `op_step_no`          INT          DEFAULT NULL COMMENT '关联的装设（合上）步骤序号',
+    `restore_ticket_id`   BIGINT       DEFAULT NULL COMMENT '终结前关联的恢复操作票（拆除/拉开对应步骤）',
+    `restore_step_no`     INT          DEFAULT NULL COMMENT '关联的恢复（拆除）步骤序号',
+    `status`              VARCHAR(24)  NOT NULL COMMENT '阶段：PENDING/EXECUTED/PENDING_REMOVE/REMOVED/CANCELED',
+    `execute_person`      VARCHAR(32)  DEFAULT NULL COMMENT '装设/合上执行人',
+    `execute_time`        DATETIME     DEFAULT NULL COMMENT '装设/合上执行时间',
+    `remove_person`       VARCHAR(32)  DEFAULT NULL COMMENT '拆除/拉开执行人',
+    `remove_time`         DATETIME     DEFAULT NULL COMMENT '拆除/拉开执行时间',
+    `change_remark`       VARCHAR(255) DEFAULT NULL COMMENT '现场变更说明（撤回许可后变更/作废时填写）',
+    `version`             INT          NOT NULL DEFAULT 0 COMMENT '乐观锁版本号，防止两人同时确认产生重复执行',
+    `created_at`          DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '建项时间',
+    PRIMARY KEY (`id`),
+    KEY `idx_sm_ticket` (`ticket_id`),
+    KEY `idx_sm_bay` (`bay_id`),
+    KEY `idx_sm_status` (`status`),
+    KEY `idx_sm_opstep` (`op_ticket_id`, `op_step_no`)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT ='工作票安全措施（逐项确认闭环）';
+
+-- ---------------------------- 11. 工作票操作痕迹（只增不改不删） ----------------------------
+-- 撤回许可、现场变更、部分失败后刷新重进，都能据此还原真实阶段；已发生的确认记录永不抹掉。
+CREATE TABLE `work_ticket_log` (
+    `id`          BIGINT       NOT NULL AUTO_INCREMENT,
+    `ticket_id`   BIGINT       NOT NULL COMMENT '所属工作票',
+    `action`      VARCHAR(32)  NOT NULL COMMENT '动作：ISSUE/PERMIT/WITHDRAW/TERMINATE/CANCEL/MEASURE_EXECUTE/MEASURE_REMOVE/MEASURE_ADD/MEASURE_UPDATE/MEASURE_CANCEL',
+    `measure_id`  BIGINT       DEFAULT NULL COMMENT '涉及的安全措施（三审动作为空）',
+    `person`      VARCHAR(32)  DEFAULT NULL COMMENT '操作人',
+    `detail`      VARCHAR(512) DEFAULT NULL COMMENT '动作明细（含措施类型/位置/关联步骤等）',
+    `created_at`  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '发生时间',
+    PRIMARY KEY (`id`),
+    KEY `idx_wtl_ticket` (`ticket_id`),
+    KEY `idx_wtl_time` (`created_at`)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT ='工作票操作痕迹（追加式审计）';
+
 -- =============================================================================
 -- 种子数据（日期依托 CURDATE()，保证演示当天时间轴一定有票）
 -- =============================================================================
@@ -324,44 +374,145 @@ INSERT INTO `work_ticket`
  CONCAT(DATE_ADD(CURDATE(), INTERVAL 1 DAY), ' 09:10:00'), CONCAT(DATE_ADD(CURDATE(), INTERVAL 1 DAY), ' 10:20:00'), CONCAT(DATE_ADD(CURDATE(), INTERVAL 1 DAY), ' 15:40:00'),
  'TERMINATED', '预试合格，具备投运条件');
 
--- 8. 操作票 6 张
+-- 8. 操作票 10 张（1-6 为倒闸装设票，7-10 为终结恢复票）
 INSERT INTO `operation_ticket` (`id`, `bay_id`, `ticket_no`, `issue_date`, `task_name`, `dispatcher`, `guardian`, `operator_name`, `status`, `remark`) VALUES
     (1, 6,  'CZP-CD-01', DATE_SUB(CURDATE(), INTERVAL 2 DAY), '110kV II段母线由运行转检修（倒负荷至 I 段）', '黄志强', '刘玉兰', '张伟', 'FINISHED', '全部步骤已按序执行'),
     (2, 2,  'CZP-CD-02', DATE_SUB(CURDATE(), INTERVAL 1 DAY), '2号主变由运行转检修',                         '孙振华', '刘玉兰', '陈国栋', 'FINISHED', '配合冷却器改造'),
     (3, 1,  'CZP-CD-03', CURDATE(),                           '1号主变 1011 隔离开关由运行转检修',            '黄志强', '刘玉兰', '张伟',   'PENDING',  '待执行，注意防跳步'),
     (4, 9,  'CZP-HX-01', CURDATE(),                           '35kV河西二线 321 断路器由运行转检修',           '孙振华', '周涛',   '赵刚',   'RUNNING',  '已执行前 3 步'),
-    (5, 8,  'CZP-HX-02', CURDATE(),                           '35kV河西线由运行转冷备',                        '黄志强', '周涛',   '孙磊',   'PENDING',  NULL),
-    (6, 11, 'CZP-BL-01', DATE_ADD(CURDATE(), INTERVAL 1 DAY), '1号主变由运行转检修',                          '孙振华', '吴斌',   '郑楠',   'PENDING',  '明日预安排');
+    (5, 8,  'CZP-HX-02', CURDATE(),                           '35kV河西线由运行转冷备',                        '黄志强', '周涛',   '孙磊',   'PENDING',  '与工作票 GZP-HX-01 联动，许可前必须执行到位'),
+    (6, 11, 'CZP-BL-01', DATE_ADD(CURDATE(), INTERVAL 1 DAY), '1号主变由运行转检修',                          '孙振华', '吴斌',   '郑楠',   'PENDING',  '明日预安排'),
+    (7, 6,  'CZF-CD-01', CURDATE(),                           '110kV母联间隔由检修转冷备（拆除安措）',          '黄志强', '刘玉兰', '张伟',   'PENDING',  '终结工作票 GZP-CD-02 前须完成对应恢复步骤'),
+    (8, 2,  'CZF-CD-02', DATE_SUB(CURDATE(), INTERVAL 2 DAY), '2号主变由检修转运行（恢复安措）',               '孙振华', '刘玉兰', '陈国栋', 'FINISHED', '冷却器改造后恢复'),
+    (9, 2,  'CZF-CD-03', CURDATE(),                           '2号主变检修安措恢复（滤油机作业结束）',          '孙振华', '刘玉兰', '王芳',   'FINISHED', '配合工作票 GZP-CD-03 终结'),
+    (10, 4, 'CZF-CD-04', DATE_ADD(CURDATE(), INTERVAL 1 DAY), '35kV城东二线路安措拆除、恢复备用',              '黄志强', '周涛',   '郑楠',   'FINISHED', '预试结束恢复');
 
--- 9. 操作步骤 30 行（票 1/2 全完成；票 4 完成 3 步；其余待执行）
-INSERT INTO `operation_step` (`id`, `ticket_id`, `step_no`, `action_desc`, `execute_person`, `execute_time`, `status`) VALUES
-    (1,  1, 1, '核对调度令：110kV II段母线转检修',                     '张伟', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 09:05:00'), 'DONE'),
-    (2,  1, 2, '检查 II段母线所带负荷已全部倒至 I 段母线',              '张伟', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 09:12:00'), 'DONE'),
-    (3,  1, 3, '拉开母联212断路器',                                    '张伟', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 09:20:00'), 'DONE'),
-    (4,  1, 4, '拉开母联2121、2122隔离开关',                           '张伟', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 09:28:00'), 'DONE'),
-    (5,  1, 5, '验明 II段母线三相确无电压',                            '张伟', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 09:35:00'), 'DONE'),
-    (6,  1, 6, '合上 II段母线接地刀闸 217',                            '张伟', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 09:41:00'), 'DONE'),
-    (7,  2, 1, '核对调度令：2号主变转检修',                            '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 1 DAY), ' 08:35:00'), 'DONE'),
-    (8,  2, 2, '拉开 2 号主变低压侧 601 断路器',                        '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 1 DAY), ' 08:44:00'), 'DONE'),
-    (9,  2, 3, '拉开 2 号主变高压侧 201 断路器',                        '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 1 DAY), ' 08:52:00'), 'DONE'),
-    (10, 2, 4, '拉开 2011、2012 隔离开关',                             '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 1 DAY), ' 09:00:00'), 'DONE'),
-    (11, 2, 5, '合上 2017 接地刀闸并挂接地线一组',                      '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 1 DAY), ' 09:09:00'), 'DONE'),
-    (12, 3, 1, '核对调度令：1011 隔离开关转检修',                      NULL, NULL, 'PENDING'),
-    (13, 3, 2, '检查 1 号主变负荷已由 2 号主变带出',                   NULL, NULL, 'PENDING'),
-    (14, 3, 3, '拉开 101 断路器',                                      NULL, NULL, 'PENDING'),
-    (15, 3, 4, '拉开 1011 隔离开关',                                   NULL, NULL, 'PENDING'),
-    (16, 3, 5, '拉开 1012 隔离开关',                                   NULL, NULL, 'PENDING'),
-    (17, 3, 6, '验明 1011 隔离开关两侧确无电压',                        NULL, NULL, 'PENDING'),
-    (18, 3, 7, '合上 1017 接地刀闸，悬挂"禁止合闸"标示牌',              NULL, NULL, 'PENDING'),
-    (19, 4, 1, '核对调度令：321 断路器转检修',                         '赵刚', CONCAT(CURDATE(), ' 08:20:00'), 'DONE'),
-    (20, 4, 2, '拉开 321 断路器',                                      '赵刚', CONCAT(CURDATE(), ' 08:28:00'), 'DONE'),
-    (21, 4, 3, '拉开 3211、3212 隔离开关',                             '赵刚', CONCAT(CURDATE(), ' 08:36:00'), 'DONE'),
-    (22, 4, 4, '验明 321 断路器两侧确无电压',                           NULL, NULL, 'PENDING'),
-    (23, 4, 5, '合上 3217 接地刀闸',                                   NULL, NULL, 'PENDING'),
-    (24, 4, 6, '在机构箱操作把手上悬挂"禁止合闸"标示牌',                NULL, NULL, 'PENDING'),
-    (25, 5, 1, '核对调度令：35kV河西线转冷备',                          NULL, NULL, 'PENDING'),
-    (26, 5, 2, '拉开 311 断路器',                                      NULL, NULL, 'PENDING'),
-    (27, 5, 3, '拉开 3111、3112 隔离开关',                             NULL, NULL, 'PENDING'),
-    (28, 5, 4, '验电后在线路侧挂接地线一组',                            NULL, NULL, 'PENDING'),
-    (29, 6, 1, '核对调度令：1号主变转检修',                             NULL, NULL, 'PENDING'),
-    (30, 6, 2, '拉开 101 断路器及两侧隔离开关，合上接地刀闸',           NULL, NULL, 'PENDING');
+-- 9. 操作步骤 64 行（装设票对应工作票许可；恢复票对应工作票终结）
+INSERT INTO `operation_step` (`ticket_id`, `step_no`, `action_desc`, `execute_person`, `execute_time`, `status`) VALUES
+    -- 票1：母联转检修（已全部执行，对应今日 PERMITTED 的 GZP-CD-02 装设侧）
+    (1, 1, '核对调度令：110kV II段母线转检修',                     '张伟', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 09:05:00'), 'DONE'),
+    (1, 2, '检查 II段母线所带负荷已全部倒至 I 段母线',              '张伟', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 09:12:00'), 'DONE'),
+    (1, 3, '拉开母联212断路器',                                    '张伟', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 09:20:00'), 'DONE'),
+    (1, 4, '拉开母联2121、2122隔离开关',                           '张伟', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 09:28:00'), 'DONE'),
+    (1, 5, '验明 II段母线确无电压',                                '张伟', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 09:35:00'), 'DONE'),
+    (1, 6, '合上母联217接地刀闸',                                  '张伟', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 09:41:00'), 'DONE'),
+    (1, 7, '在母联间隔四周装设临时遮栏',                            '张伟', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 09:46:00'), 'DONE'),
+    (1, 8, '在212断路器操作把手上悬挂"禁止合闸，有人工作"标示牌',     '张伟', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 09:48:00'), 'DONE'),
+    -- 票2：2号主变转检修（已全部执行，对应已终结的 GZP-CD-01 装设侧）
+    (2, 1, '核对调度令：2号主变转检修',                            '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 1 DAY), ' 08:35:00'), 'DONE'),
+    (2, 2, '拉开 2 号主变低压侧 601 断路器',                        '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 1 DAY), ' 08:44:00'), 'DONE'),
+    (2, 3, '拉开 2 号主变高压侧 201 断路器',                        '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 1 DAY), ' 08:52:00'), 'DONE'),
+    (2, 4, '拉开 2011、2012 隔离开关',                             '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 1 DAY), ' 09:00:00'), 'DONE'),
+    (2, 5, '合上 2017 接地刀闸',                                   '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 1 DAY), ' 09:09:00'), 'DONE'),
+    (2, 6, '在2号主变10kV套管侧装设接地线一组',                      '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 1 DAY), ' 09:14:00'), 'DONE'),
+    (2, 7, '在主变本体及冷却器周围装设遮栏',                         '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 1 DAY), ' 09:18:00'), 'DONE'),
+    (2, 8, '在工作地点悬挂"在此工作"标示牌',                         '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 1 DAY), ' 09:20:00'), 'DONE'),
+    -- 票3：1011隔离开关转检修（全部待执行）
+    (3, 1, '核对调度令：1011 隔离开关转检修',                      NULL, NULL, 'PENDING'),
+    (3, 2, '检查 1 号主变负荷已由 2 号主变带出',                   NULL, NULL, 'PENDING'),
+    (3, 3, '拉开 101 断路器',                                      NULL, NULL, 'PENDING'),
+    (3, 4, '拉开 1011 隔离开关',                                   NULL, NULL, 'PENDING'),
+    (3, 5, '拉开 1012 隔离开关',                                   NULL, NULL, 'PENDING'),
+    (3, 6, '验明 1011 隔离开关两侧确无电压',                        NULL, NULL, 'PENDING'),
+    (3, 7, '合上 1017 接地刀闸，悬挂"禁止合闸"标示牌',              NULL, NULL, 'PENDING'),
+    -- 票4：321断路器转检修（前 3 步已执行；对应 GZP-HX-02 装设侧，尚差接地与围栏）
+    (4, 1, '核对调度令：321 断路器转检修',                         '赵刚', CONCAT(CURDATE(), ' 08:20:00'), 'DONE'),
+    (4, 2, '拉开 321 断路器',                                      '赵刚', CONCAT(CURDATE(), ' 08:28:00'), 'DONE'),
+    (4, 3, '拉开 3211、3212 隔离开关',                             '赵刚', CONCAT(CURDATE(), ' 08:36:00'), 'DONE'),
+    (4, 4, '验明 321 断路器两侧确无电压',                           NULL, NULL, 'PENDING'),
+    (4, 5, '合上 3217 接地刀闸',                                   NULL, NULL, 'PENDING'),
+    (4, 6, '在机构箱操作把手上悬挂"禁止合闸"标示牌',                NULL, NULL, 'PENDING'),
+    (4, 7, '在321断路器线路侧挂接地线一组',                          NULL, NULL, 'PENDING'),
+    (4, 8, '在321断路器间隔四周装设遮栏',                            NULL, NULL, 'PENDING'),
+    -- 票5：35kV河西线转冷备（全部待执行；对应已签发 GZP-HX-01 装设侧）
+    (5, 1, '核对调度令：35kV河西线转冷备',                          NULL, NULL, 'PENDING'),
+    (5, 2, '拉开 311 断路器',                                      NULL, NULL, 'PENDING'),
+    (5, 3, '拉开 3111、3112 隔离开关',                             NULL, NULL, 'PENDING'),
+    (5, 4, '验电后在311线路侧挂接地线一组',                          NULL, NULL, 'PENDING'),
+    (5, 5, '合上 3117 线路侧接地刀闸',                              NULL, NULL, 'PENDING'),
+    (5, 6, '在311断路器间隔装设遮栏',                               NULL, NULL, 'PENDING'),
+    (5, 7, '在操作把手上悬挂"禁止合闸，有人工作"标示牌',              NULL, NULL, 'PENDING'),
+    -- 票6：白龙1号主变转检修（明日，全部待执行；对应已签发 GZP-BL-01）
+    (6, 1, '核对调度令：1号主变转检修',                             NULL, NULL, 'PENDING'),
+    (6, 2, '拉开 101 断路器',                                      NULL, NULL, 'PENDING'),
+    (6, 3, '拉开 1011、1012 隔离开关',                             NULL, NULL, 'PENDING'),
+    (6, 4, '验明 101 断路器两侧确无电压',                            NULL, NULL, 'PENDING'),
+    (6, 5, '合上 1017 接地刀闸',                                   NULL, NULL, 'PENDING'),
+    (6, 6, '在1号主变本体侧挂接地线一组',                            NULL, NULL, 'PENDING'),
+    (6, 7, '在主变间隔四周装设遮栏',                                 NULL, NULL, 'PENDING'),
+    (6, 8, '在101操作把手上悬挂"禁止合闸，有人工作"标示牌',           NULL, NULL, 'PENDING'),
+    -- 票7：母联检修转冷备恢复票（待执行；终结 GZP-CD-02 前必须完成 3/4/5 步）
+    (7, 1, '核对调度令：110kV母联由检修转冷备',                      NULL, NULL, 'PENDING'),
+    (7, 2, '检查母联间隔具备恢复条件、人员全部撤离',                   NULL, NULL, 'PENDING'),
+    (7, 3, '拉开母联217接地刀闸',                                   NULL, NULL, 'PENDING'),
+    (7, 4, '拆除母联间隔临时遮栏',                                   NULL, NULL, 'PENDING'),
+    (7, 5, '取下"禁止合闸，有人工作"标示牌',                          NULL, NULL, 'PENDING'),
+    -- 票8：2号主变检修转运行恢复票（已全部执行；对应 GZP-CD-01 终结侧）
+    (8, 1, '核对调度令：2号主变由检修转运行',                        '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 17:05:00'), 'DONE'),
+    (8, 2, '拉开 2017 接地刀闸',                                   '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 17:12:00'), 'DONE'),
+    (8, 3, '拆除2号主变10kV套管侧接地线一组',                        '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 17:18:00'), 'DONE'),
+    (8, 4, '拆除主变本体及冷却器周围遮栏',                           '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 17:22:00'), 'DONE'),
+    (8, 5, '收回"在此工作"标示牌',                                  '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 17:24:00'), 'DONE'),
+    -- 票9：2号主变滤油作业安措恢复票（已全部执行；对应 GZP-CD-03 终结侧）
+    (9, 1, '核对作业结束、工作班人员撤离',                           '王芳', CONCAT(CURDATE(), ' 19:05:00'), 'DONE'),
+    (9, 2, '拉开 2017 接地刀闸（验明确在分位）',                     '王芳', CONCAT(CURDATE(), ' 19:12:00'), 'DONE'),
+    (9, 3, '拆除工作区域围栏',                                      '王芳', CONCAT(CURDATE(), ' 19:16:00'), 'DONE'),
+    (9, 4, '收回"在此工作"标示牌',                                  '王芳', CONCAT(CURDATE(), ' 19:18:00'), 'DONE'),
+    -- 票10：城东二线预试安措恢复票（已全部执行；对应 GZP-CD-05 终结侧）
+    (10, 1, '核对预试结束、线路具备恢复条件',                        '郑楠', CONCAT(DATE_ADD(CURDATE(), INTERVAL 1 DAY), ' 15:05:00'), 'DONE'),
+    (10, 2, '拆除线路侧临时接地线',                                  '郑楠', CONCAT(DATE_ADD(CURDATE(), INTERVAL 1 DAY), ' 15:14:00'), 'DONE'),
+    (10, 3, '拆除围栏遮栏',                                         '郑楠', CONCAT(DATE_ADD(CURDATE(), INTERVAL 1 DAY), ' 15:20:00'), 'DONE'),
+    (10, 4, '收回标示牌',                                           '郑楠', CONCAT(DATE_ADD(CURDATE(), INTERVAL 1 DAY), ' 15:24:00'), 'DONE');
+
+-- 10. 工作票安全措施（逐项确认；状态与三审阶段一致）
+--    装设侧关联 op_ticket_id/op_step_no（许可前核对），恢复侧关联 restore_*（终结前核对）。
+INSERT INTO `safety_measure`
+(`ticket_id`, `seq_no`, `measure_type`, `bay_id`, `location`, `required_action`, `signboard_text`,
+ `op_ticket_id`, `op_step_no`, `restore_ticket_id`, `restore_step_no`,
+ `status`, `execute_person`, `execute_time`, `remove_person`, `remove_time`, `change_remark`, `version`) VALUES
+    -- GZP-CD-01（票1，已终结 -2d）：四类齐备，装设/拆除痕迹与两联操作票一致
+    (1, 1, 'EARTH_SWITCH', 2, '2017 接地刀闸',                '合上接地刀闸',           NULL,                              2, 5, 8, 2, 'REMOVED', '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 08:58:00'), '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 17:12:00'), NULL, 2),
+    (1, 2, 'GROUND_WIRE',  2, '2号主变10kV套管侧',             '装设接地线 1 组（编号 021）', NULL,                          2, 6, 8, 3, 'REMOVED', '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 09:01:00'), '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 17:18:00'), NULL, 2),
+    (1, 3, 'BARRIER',      2, '主变本体及冷却器周围',          '装设封闭式遮栏',          NULL,                              2, 7, 8, 4, 'REMOVED', '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 09:04:00'), '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 17:22:00'), NULL, 2),
+    (1, 4, 'SIGNBOARD',    2, '工作地点',                      '悬挂标示牌',              '在此工作',                         2, 8, 8, 5, 'REMOVED', '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 09:05:00'), '陈国栋', CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 17:24:00'), NULL, 2),
+    -- GZP-HX-01（票2，已签发）：安措侧与操作票侧均未齐备 —— 许可时逐项指出卡点
+    (2, 1, 'GROUND_WIRE',  8, '311断路器线路侧',               '装设接地线 1 组',         NULL,                              5, 4, NULL, NULL, 'PENDING', NULL, NULL, NULL, NULL, NULL, 0),
+    (2, 2, 'EARTH_SWITCH', 8, '3117 线路侧接地刀闸',           '合上接地刀闸',            NULL,                              5, 5, NULL, NULL, 'EXECUTED', '孙磊', CONCAT(CURDATE(), ' 07:55:00'), NULL, NULL, NULL, 1),
+    (2, 3, 'BARRIER',      8, '311断路器间隔',                 '装设遮栏',                NULL,                              5, 6, NULL, NULL, 'PENDING', NULL, NULL, NULL, NULL, NULL, 0),
+    (2, 4, 'SIGNBOARD',    8, '311断路器操作把手',             '悬挂标示牌',              '禁止合闸，有人工作',               5, 7, NULL, NULL, 'EXECUTED', '孙磊', CONCAT(CURDATE(), ' 07:58:00'), NULL, NULL, NULL, 1),
+    -- GZP-HX-02（票3，待签发）：措施已编排，关联票4后段步骤，均待执行
+    (3, 1, 'EARTH_SWITCH', 9, '3217 接地刀闸',                 '合上接地刀闸',            NULL,                              4, 5, NULL, NULL, 'PENDING', NULL, NULL, NULL, NULL, NULL, 0),
+    (3, 2, 'GROUND_WIRE',  9, '321断路器线路侧',               '装设接地线 1 组',         NULL,                              4, 7, NULL, NULL, 'PENDING', NULL, NULL, NULL, NULL, NULL, 0),
+    (3, 3, 'BARRIER',      9, '321断路器间隔四周',             '装设遮栏',                NULL,                              4, 8, NULL, NULL, 'PENDING', NULL, NULL, NULL, NULL, NULL, 0),
+    (3, 4, 'SIGNBOARD',    9, '机构箱操作把手',                '悬挂标示牌',              '禁止合闸，有人工作',               4, 6, NULL, NULL, 'PENDING', NULL, NULL, NULL, NULL, NULL, 0),
+    -- GZP-CD-02（票4，已许可，今日进行中）：装设侧全部完成且票1对应步骤已执行；
+    --   终结侧恢复票7尚待执行；另保留一条撤回许可后作废的旧措施痕迹
+    (4, 1, 'EARTH_SWITCH', 6, '母联217接地刀闸',               '合上接地刀闸',            NULL,                              1, 6, 7, 3, 'PENDING_REMOVE', '张伟', CONCAT(CURDATE(), ' 08:58:00'), NULL, NULL, NULL, 1),
+    (4, 2, 'BARRIER',      6, '母联间隔操作通道两侧',          '装设临时遮栏',            NULL,                              1, 7, 7, 4, 'PENDING_REMOVE', '张伟', CONCAT(CURDATE(), ' 09:01:00'), NULL, NULL, NULL, 1),
+    (4, 3, 'SIGNBOARD',    6, '212断路器操作把手',             '悬挂标示牌',              '禁止合闸，有人工作',               1, 8, 7, 5, 'PENDING_REMOVE', '张伟', CONCAT(CURDATE(), ' 09:03:00'), NULL, NULL, NULL, 1),
+    (4, 4, 'GROUND_WIRE',  6, '母联212断路器母线侧（旧桩位）',  '装设接地线 1 组',         NULL,                              NULL, NULL, NULL, NULL, 'CANCELED', '张伟', CONCAT(CURDATE(), ' 08:40:00'), NULL, NULL, '许可后现场核位发现桩头锈蚀，撤回许可后改挂至217-0接地点，本项作废', 2),
+    -- GZP-CD-03（票5，已终结）：围栏与标示牌已拆除，恢复票9对应步骤已执行
+    (5, 1, 'BARRIER',      2, '滤油机作业区域',                '装设安全围栏',            NULL,                              NULL, NULL, 9, 3, 'REMOVED', '王芳', CONCAT(CURDATE(), ' 13:50:00'), '王芳', CONCAT(CURDATE(), ' 19:16:00'), NULL, 2),
+    (5, 2, 'SIGNBOARD',    2, '滤油机电源开关处',              '悬挂标示牌',              '在此工作',                         NULL, NULL, 9, 4, 'REMOVED', '王芳', CONCAT(CURDATE(), ' 13:52:00'), '王芳', CONCAT(CURDATE(), ' 19:18:00'), NULL, 2),
+    -- GZP-CD-04（票6，待签发，不停电作业）：只设围栏与标示牌，无接地类措施
+    (6, 1, 'BARRIER',      3, '311电流互感器作业点周围',       '装设绝缘围栏，保持安全距离不小于 0.7m', NULL,                 NULL, NULL, NULL, NULL, 'PENDING', NULL, NULL, NULL, NULL, NULL, 0),
+    (6, 2, 'SIGNBOARD',    3, '作业区域入口',                  '悬挂标示牌',              '在此工作，有人工作',               NULL, NULL, NULL, NULL, 'PENDING', NULL, NULL, NULL, NULL, NULL, 0),
+    -- GZP-BL-01（票7，已签发，明日）：四类措施与票6步骤均待执行，许可会被双侧拦住
+    (7, 1, 'EARTH_SWITCH', 11, '1017 接地刀闸',                '合上接地刀闸',            NULL,                              6, 5, NULL, NULL, 'PENDING', NULL, NULL, NULL, NULL, NULL, 0),
+    (7, 2, 'GROUND_WIRE',  11, '1号主变本体侧',                '装设接地线 1 组',         NULL,                              6, 6, NULL, NULL, 'PENDING', NULL, NULL, NULL, NULL, NULL, 0),
+    (7, 3, 'BARRIER',      11, '主变间隔四周',                 '装设遮栏',                NULL,                              6, 7, NULL, NULL, 'PENDING', NULL, NULL, NULL, NULL, NULL, 0),
+    (7, 4, 'SIGNBOARD',    11, '101断路器操作把手',            '悬挂标示牌',              '禁止合闸，有人工作',               6, 8, NULL, NULL, 'PENDING', NULL, NULL, NULL, NULL, NULL, 0),
+    -- GZP-CD-05（票8，已终结 +1d）：接地线、遮栏、标示牌已拆除，恢复票10已执行
+    (8, 1, 'GROUND_WIRE',  4, '35kV城东二线线路侧',            '装设接地线 1 组',         NULL,                              NULL, NULL, 10, 2, 'REMOVED', '郑楠', CONCAT(DATE_ADD(CURDATE(), INTERVAL 1 DAY), ' 09:55:00'), '郑楠', CONCAT(DATE_ADD(CURDATE(), INTERVAL 1 DAY), ' 15:14:00'), NULL, 2),
+    (8, 2, 'BARRIER',      4, '避雷器及电缆头试验区域',        '装设遮栏',                NULL,                              NULL, NULL, 10, 3, 'REMOVED', '郑楠', CONCAT(DATE_ADD(CURDATE(), INTERVAL 1 DAY), ' 09:58:00'), '郑楠', CONCAT(DATE_ADD(CURDATE(), INTERVAL 1 DAY), ' 15:20:00'), NULL, 2),
+    (8, 3, 'SIGNBOARD',    4, '线路侧隔离开关操作把手',        '悬挂标示牌',              '禁止合闸，有人工作',               NULL, NULL, 10, 4, 'REMOVED', '郑楠', CONCAT(DATE_ADD(CURDATE(), INTERVAL 1 DAY), ' 10:00:00'), '郑楠', CONCAT(DATE_ADD(CURDATE(), INTERVAL 1 DAY), ' 15:24:00'), NULL, 2);
+
+-- 11. 工作票操作痕迹（仅为已许可的票4补一段撤回/变更/再许可的真实痕迹，演示刷新后仍可追溯）
+INSERT INTO `work_ticket_log` (`ticket_id`, `action`, `measure_id`, `person`, `detail`, `created_at`) VALUES
+    (4, 'ISSUE',  NULL, '朱明',   '工作票签发', CONCAT(CURDATE(), ' 08:10:00')),
+    (4, 'MEASURE_EXECUTE', NULL, '张伟', '装设接地线 1 组于母联212断路器母线侧（旧桩位）', CONCAT(CURDATE(), ' 08:40:00')),
+    (4, 'PERMIT', NULL, '刘玉兰', '许可开工', CONCAT(CURDATE(), ' 08:45:00')),
+    (4, 'WITHDRAW', NULL, '刘玉兰', '现场核位发现桩头锈蚀，撤回许可后变更接地点', CONCAT(CURDATE(), ' 08:48:00')),
+    (4, 'MEASURE_CANCEL', NULL, '张伟', '原「母联212断路器母线侧接地线」作废，改挂 217-0 接地点，原确认痕迹保留', CONCAT(CURDATE(), ' 08:50:00')),
+    (4, 'MEASURE_ADD', NULL, '张伟', '新增/调整接地措施并重新执行装设确认', CONCAT(CURDATE(), ' 08:58:00')),
+    (4, 'PERMIT', NULL, '刘玉兰', '变更项重新执行完毕、关联操作票步骤核对一致，再次许可', CONCAT(CURDATE(), ' 09:05:00'));

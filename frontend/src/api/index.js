@@ -58,10 +58,33 @@ export const createWorkTicket = (payload) => http.post('/work-tickets', payload)
 
 export const signWorkTicket = (id, stage, person) => http.post(`/work-tickets/${id}/sign`, { stage, person })
 
+export const withdrawWorkTicket = (id, person, reason) =>
+  http.post(`/work-tickets/${id}/withdraw`, { person, reason })
+
+export const cancelWorkTicket = (id, person, reason) =>
+  http.post(`/work-tickets/${id}/cancel`, { person, reason })
+
+// 安全措施逐项闭环
+export const addMeasure = (id, payload) => http.post(`/work-tickets/${id}/measures`, payload)
+
+export const updateMeasure = (id, measureId, payload) =>
+  http.post(`/work-tickets/${id}/measures/${measureId}/update`, payload)
+
+export const executeMeasure = (id, measureId, person, version) =>
+  http.post(`/work-tickets/${id}/measures/${measureId}/execute`, { person, version })
+
+export const removeMeasure = (id, measureId, person, version) =>
+  http.post(`/work-tickets/${id}/measures/${measureId}/remove`, { person, version })
+
+export const cancelMeasure = (id, measureId, remark) =>
+  http.post(`/work-tickets/${id}/measures/${measureId}/cancel`, { remark })
+
 // 操作票（倒闸操作步骤）
 export const operationTickets = (date) => http.get('/operation-tickets', { params: { date } })
 
 export const operationTicket = (id) => http.get(`/operation-tickets/${id}`)
+
+export const operationTicketsByBay = (bayId) => http.get('/operation-tickets/by-bay', { params: { bayId } })
 
 export const executeStep = (id, stepNo, person) =>
   http.post(`/operation-tickets/${id}/steps/${stepNo}/execute`, { person })

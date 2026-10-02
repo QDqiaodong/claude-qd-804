@@ -17,6 +17,9 @@ public final class Labels {
     private static final Map<String, String> DEFECT_STATUS = new HashMap<>();
     private static final Map<String, String> WORK_STATUS = new HashMap<>();
     private static final Map<String, String> OP_STATUS = new HashMap<>();
+    private static final Map<String, String> MEASURE_TYPE = new HashMap<>();
+    private static final Map<String, String> MEASURE_STATUS = new HashMap<>();
+    private static final Map<String, String> TICKET_ACTION = new HashMap<>();
     private static final Map<String, String> EQUIP_TYPE = new HashMap<>();
     private static final Map<String, String> EQUIP_STATUS = new HashMap<>();
     private static final Map<String, String> INSPECT_RESULT = new HashMap<>();
@@ -51,6 +54,28 @@ public final class Labels {
         OP_STATUS.put("RUNNING", "执行中");
         OP_STATUS.put("FINISHED", "已完成");
         OP_STATUS.put("CANCELED", "已作废");
+
+        MEASURE_TYPE.put("GROUND_WIRE", "接地线");
+        MEASURE_TYPE.put("EARTH_SWITCH", "接地刀闸");
+        MEASURE_TYPE.put("BARRIER", "遮栏");
+        MEASURE_TYPE.put("SIGNBOARD", "标示牌");
+
+        MEASURE_STATUS.put("PENDING", "待执行");
+        MEASURE_STATUS.put("EXECUTED", "已执行");
+        MEASURE_STATUS.put("PENDING_REMOVE", "待拆除");
+        MEASURE_STATUS.put("REMOVED", "已拆除");
+        MEASURE_STATUS.put("CANCELED", "已作废（变更）");
+
+        TICKET_ACTION.put("ISSUE", "签发");
+        TICKET_ACTION.put("PERMIT", "许可");
+        TICKET_ACTION.put("WITHDRAW", "撤回许可");
+        TICKET_ACTION.put("TERMINATE", "终结");
+        TICKET_ACTION.put("CANCEL", "作废");
+        TICKET_ACTION.put("MEASURE_EXECUTE", "装设确认");
+        TICKET_ACTION.put("MEASURE_REMOVE", "拆除确认");
+        TICKET_ACTION.put("MEASURE_ADD", "新增措施");
+        TICKET_ACTION.put("MEASURE_UPDATE", "变更措施");
+        TICKET_ACTION.put("MEASURE_CANCEL", "作废旧措施");
 
         EQUIP_TYPE.put("TRANSFORMER", "主变压器");
         EQUIP_TYPE.put("BREAKER", "断路器");
@@ -93,6 +118,18 @@ public final class Labels {
 
     public static String opStatus(String status) {
         return of(OP_STATUS, status);
+    }
+
+    public static String measureType(String type) {
+        return of(MEASURE_TYPE, type);
+    }
+
+    public static String measureStatus(String status) {
+        return of(MEASURE_STATUS, status);
+    }
+
+    public static String ticketAction(String action) {
+        return of(TICKET_ACTION, action);
     }
 
     public static String equipType(String type) {
